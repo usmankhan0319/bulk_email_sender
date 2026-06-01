@@ -1,0 +1,7 @@
+2026-05-24 19:09:28,239 [INFO] Loaded 2 content template(s)
+2026-05-24 19:09:28,242 [INFO] Imported 2 recipients into DB
+2026-05-24 19:13:35,866 [INFO] Loaded 1 SMTP server(s)
+2026-05-24 19:13:35,867 [INFO] Starting send loop. Global daily limit: 5000. Workers: 5. Batch: 100
+2026-05-24 19:13:35,869 [INFO] Processing batch of 2 (sent today so far: 0)
+2026-05-24 19:13:39,839 [INFO] SENT  u882515@gmail.com                   via smtp_1
+2026-05-24 19:13:43,177 [INFO] SENT  shoaibbilal101@gmail.com            via smtp_1

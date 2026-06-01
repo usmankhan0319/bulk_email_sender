@@ -1,0 +1,13 @@
+2026-06-01 23:45:10,768 [INFO] Tracker server starting on 0.0.0.0:8080
+2026-06-01 23:46:37,289 [INFO] Tracker server starting on 0.0.0.0:8080
+2026-06-01 23:46:56,968 [INFO] Tracker server starting on 0.0.0.0:8090
+2026-06-01 23:46:57,021 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8090
+ * Running on http://192.168.1.40:8090
+2026-06-01 23:46:57,021 [INFO] [33mPress CTRL+C to quit[0m
+2026-06-01 23:47:06,500 [INFO] 127.0.0.1 - - [01/Jun/2026 23:47:06] "[33mGET / HTTP/1.1[0m" 404 -
+2026-06-01 23:47:06,591 [INFO] 127.0.0.1 - - [01/Jun/2026 23:47:06] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-06-01 23:47:17,721 [INFO] 192.168.1.40 - - [01/Jun/2026 23:47:17] "[33mGET / HTTP/1.1[0m" 404 -
+2026-06-01 23:47:17,848 [INFO] 192.168.1.40 - - [01/Jun/2026 23:47:17] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-06-01 23:47:22,975 [INFO] 192.168.1.40 - - [01/Jun/2026 23:47:22] "[33mGET /docs HTTP/1.1[0m" 404 -

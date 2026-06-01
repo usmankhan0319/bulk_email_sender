@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bulk Email Sender — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">N</div>
+      <div>
+        <div class="name">Mailer</div>
+        <div class="sub">Bulk delivery console</div>
+      </div>
+    </div>
+
+    <div class="nav">
+      <div class="nav-item active" data-page="dashboard">
+        <span>Dashboard</span>
+      </div>
+      <div class="nav-item" data-page="smtp">
+        <span>SMTP Servers</span>
+        <span class="count" id="nav-smtp-count">0</span>
+      </div>
+      <div class="nav-item" data-page="campaign">
+        <span>New Campaign</span>
+      </div>
+      <div class="nav-item" data-page="campaigns">
+        <span>Campaigns</span>
+        <span class="count" id="nav-camp-count">0</span>
+      </div>
+      <div class="nav-item" data-page="logs">
+        <span>Live Logs</span>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="row"><span>Sent today</span><span id="sf-sent">0</span></div>
+      <div class="row"><span>Pending</span><span id="sf-pending">0</span></div>
+      <div class="row"><span>Active SMTP</span><span id="sf-smtp">0</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- ============================= DASHBOARD ============================= -->
+    <section class="page active" data-page="dashboard">
+      <div class="page-header">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="subtitle">Real-time overview of your bulk email delivery</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div>
+      </div>
+
+      <div class="tiles">
+        <div class="tile accent">
+          <div class="label">Sent today</div>
+          <div class="value" id="t-sent">0</div>
+          <div class="delta">across all SMTP servers</div>
+        </div>
+        <div class="tile">
+          <div class="label">Total opened</div>
+          <div class="value" id="t-opened">0</div>
+          <div class="delta good" id="t-open-rate">0% open rate</div>
+        </div>
+        <div class="tile">
+          <div class="label">Pending</div>
+          <div class="value" id="t-pending">0</div>
+          <div class="delta">in queue</div>
+        </div>
+        <div class="tile">
+          <div class="label">Failed</div>
+          <div class="value" id="t-failed">0</div>
+          <div class="delta bad" id="t-fail-rate">0% failure rate</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Per-domain delivery</h2>
+          <div class="hint">grouped by recipient domain</div>
+        </div>
+        <table class="t">
+          <thead><tr>
+            <th>Domain</th><th class="right">Total</th><th class="right">Sent</th>
+            <th class="right">Opened</th><th class="right">Failed</th>
+            <th class="right">Open rate</th>
+          </tr></thead>
+          <tbody id="domains-tbody">
+            <tr><td colspan="6" class="muted">No data yet — upload recipients to begin.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Per-SMTP usage</h2>
+          <div class="hint">today's send count vs daily limit</div>
+        </div>
+        <table class="t">
+          <thead><tr>
+            <th>Name</th><th>Host</th><th>Status</th>
+            <th class="right">Sent today</th><th class="right">Daily limit</th>
+            <th class="right">Usage</th>
+          </tr></thead>
+          <tbody id="smtps-tbody">
+            <tr><td colspan="6" class="muted">No SMTP servers configured.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Domain deliverability</h2>
+          <div class="hint">SPF / DKIM / DMARC check per from-domain</div>
+        </div>
+        <div class="toolbar mt-8">
+          <input id="dlv-input" placeholder="yourdomain.com" style="background:var(--bg);border:1px solid var(--border-strong);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:280px;">
+          <button class="btn" onclick="runDlvCheck()">Check</button>
+          <div class="spacer"></div>
+          <span class="muted" id="dlv-summary"></span>
+        </div>
+        <div id="dlv-detail" class="mt-12"></div>
+      </div>
+    </section>
+
+    <!-- ============================= SMTP ============================= -->
+    <section class="page" data-page="smtp">
+      <div class="page-header">
+        <div>
+          <h1>SMTP Servers</h1>
+          <div class="subtitle">Add servers — each is auto-tested on save</div>
+        </div>
+        <button class="btn primary" onclick="openSmtpModal()">+ Add SMTP server</button>
+      </div>
+
+      <div class="card">
+        <table class="t">
+          <thead><tr>
+            <th>#</th><th>Name</th><th>Host : Port</th><th>From</th>
+            <th>Status</th><th class="right">Daily limit</th><th></th>
+          </tr></thead>
+          <tbody id="smtp-tbody">
+            <tr><td colspan="7" class="muted">No SMTP servers yet. Click <strong>Add SMTP server</strong>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============================= NEW CAMPAIGN ============================= -->
+    <section class="page" data-page="campaign">
+      <div class="page-header">
+        <div>
+          <h1>New Campaign</h1>
+          <div class="subtitle">Upload content + recipients, validate, then send or schedule</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>1. Campaign details</h2></div>
+        <div class="form">
+          <div class="form-row">
+            <label>Campaign name</label>
+            <input id="c-name" placeholder="May newsletter">
+          </div>
+          <div class="form-row">
+            <label>Email subject</label>
+            <input id="c-subject" placeholder="Subject auto-fills from your uploaded file">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>2. Email content</h2>
+          <div class="hint">Upload .docx, .html, or .txt</div>
+        </div>
+        <div class="dropzone" id="dz-content">
+          <strong>Click to upload</strong> or drag a file here
+          <div class="filename" id="content-filename"></div>
+        </div>
+        <input type="file" id="file-content" accept=".docx,.html,.htm,.txt" style="display:none">
+        <div class="form-row mt-16">
+          <label>HTML preview / edit</label>
+          <textarea id="c-html"></textarea>
+        </div>
+        <div class="form-row">
+          <label>Plain-text version</label>
+          <textarea id="c-text"></textarea>
+        </div>
+        <div class="toolbar mt-12">
+          <button class="btn" onclick="runSpamCheck()">Run spam check</button>
+          <div class="spacer"></div>
+          <span class="muted" id="spam-summary"></span>
+        </div>
+        <div id="spam-detail"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>3. Recipients</h2>
+          <div class="hint">Upload .xlsx or .csv</div>
+        </div>
+        <div class="dropzone" id="dz-recipients">
+          <strong>Click to upload</strong> or drag a file here
+          <div class="filename" id="recipients-filename"></div>
+        </div>
+        <input type="file" id="file-recipients" accept=".xlsx,.csv" style="display:none">
+        <div class="mt-16">
+          <table class="t">
+            <thead><tr><th>Email</th><th>First name</th><th>Last name</th><th>Company</th></tr></thead>
+            <tbody id="recipients-preview">
+              <tr><td colspan="4" class="muted">No recipients loaded.</td></tr>
+            </tbody>
+          </table>
+          <div class="muted mt-8" id="recipients-summary"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>4. Send</h2></div>
+        <div class="toolbar">
+          <button class="btn primary" onclick="submitCampaign('start_now')">Send now</button>
+          <button class="btn" onclick="submitCampaign('save')">Save as draft</button>
+          <div class="spacer"></div>
+          <div class="form-row" style="display:flex;gap:8px;align-items:center;margin:0;">
+            <input type="datetime-local" id="c-schedule" style="width:auto;">
+            <button class="btn" onclick="submitCampaign('schedule')">Schedule</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================= CAMPAIGNS ============================= -->
+    <section class="page" data-page="campaigns">
+      <div class="page-header">
+        <div>
+          <h1>Campaigns</h1>
+          <div class="subtitle">All campaigns and their delivery progress</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <table class="t">
+          <thead><tr>
+            <th>#</th><th>Name</th><th>Status</th>
+            <th class="right">Total</th><th class="right">Sent</th>
+            <th class="right">Opened</th><th class="right">Failed</th>
+            <th>Created</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="camp-tbody">
+            <tr><td colspan="9" class="muted">No campaigns yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============================= LOGS ============================= -->
+    <section class="page" data-page="logs">
+      <div class="page-header">
+        <div>
+          <h1>Live Logs</h1>
+          <div class="subtitle">Activity stream — auto-refreshes every 2 seconds</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn" onclick="clearLogs()">Clear view</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="log-box" id="log-box"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============================= SMTP MODAL ============================= -->
+<div class="modal-bg" id="smtp-modal">
+  <div class="modal">
+    <h3>Add SMTP Server</h3>
+    <div class="form">
+      <div class="form-row"><label>Friendly name</label><input id="s-name" placeholder="Primary Gmail"></div>
+      <div class="form-grid-2">
+        <div class="form-row"><label>Host</label><input id="s-host" placeholder="smtp.gmail.com"></div>
+        <div class="form-row"><label>Port</label><input id="s-port" type="number" value="587"></div>
+      </div>
+      <div class="form-grid-2">
+        <div class="form-row"><label>Username</label><input id="s-user" placeholder="you@gmail.com"></div>
+        <div class="form-row"><label>Password / App password</label><input id="s-pass" type="password"></div>
+      </div>
+      <div class="form-grid-2">
+        <div class="form-row"><label>From email</label><input id="s-from-email" placeholder="you@gmail.com"></div>
+        <div class="form-row"><label>From name</label><input id="s-from-name" placeholder="Your Brand"></div>
+      </div>
+      <div class="form-grid-2">
+        <div class="form-row"><label>Daily limit</label><input id="s-limit" type="number" value="500"></div>
+        <div class="form-row"><label>&nbsp;</label>
+          <div class="checkbox-row"><input id="s-tls" type="checkbox" checked><label for="s-tls">Use STARTTLS</label></div>
+        </div>
+      </div>
+      <div class="toolbar mt-8">
+        <span class="muted" id="smtp-test-result"></span>
+        <div class="spacer"></div>
+        <button class="btn" onclick="closeSmtpModal()">Cancel</button>
+        <button class="btn primary" onclick="submitSmtp()" id="btn-smtp-save">Save & test</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

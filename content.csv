@@ -1,0 +1,17 @@
+content_id,subject,html_body,text_body
+welcome_v1,"Welcome to Neurocare AI, {{first_name}}!","<p>Hi {{first_name}},</p><p>Thank you for joining <b>Neurocare AI</b>. We're excited to have you and <b>{{company}}</b> on board.</p><p>If you have any questions, just reply to this email — a real human will respond.</p><p>Best regards,<br/>The Neurocare AI Team</p>","Hi {{first_name}},
+
+Thank you for joining Neurocare AI. We're excited to have you and {{company}} on board.
+
+If you have any questions, just reply to this email.
+
+Best regards,
+The Neurocare AI Team"
+promo_v1,"{{first_name}}, a quick note for {{company}}","<p>Hello {{first_name}},</p><p>We noticed {{company}} might benefit from our latest update. Would you be open to a short chat next week?</p><p>Reply with a time that suits you.</p><p>Warm regards,<br/>Neurocare AI</p>","Hello {{first_name}},
+
+We noticed {{company}} might benefit from our latest update. Would you be open to a short chat next week?
+
+Reply with a time that suits you.
+
+Warm regards,
+Neurocare AI"
