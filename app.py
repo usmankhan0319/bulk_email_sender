@@ -86,11 +86,13 @@ class SmtpIn(BaseModel):
     host: str
     port: int = 587
     username: str
-    password: str
+    password: str = ""
     from_email: str
     from_name: str = ""
+    reply_to: str = ""
     daily_limit: int = 500
     use_tls: bool = True
+    warmup_enabled: bool = False
 
 
 class SpamCheckIn(BaseModel):
@@ -107,6 +109,17 @@ class CampaignIn(BaseModel):
     recipients: list[dict] = Field(default_factory=list)
     action: str = "save"           # save | start_now | schedule
     scheduled_at: Optional[str] = None  # ISO datetime in UTC
+    smtp_ids: list[int] = Field(default_factory=list)  # empty = use all active
+    send_gap_seconds: int = 0      # 0 = as fast as possible
+
+
+class CampaignEdit(BaseModel):
+    name: str
+    subject: str
+    html_body: str
+    text_body: str
+    smtp_ids: list[int] = Field(default_factory=list)
+    send_gap_seconds: int = 0
 
 
 # ---------- dashboard ----------
@@ -188,10 +201,33 @@ async def api_smtp_add(payload: SmtpIn):
     return {"id": smtp_id, "ok": ok, "error": err, "deliverability": delivery}
 
 
+@app.put("/api/smtp/{smtp_id}")
+async def api_smtp_update(smtp_id: int, payload: SmtpIn):
+    s = db.get_smtp(smtp_id)
+    if not s:
+        raise HTTPException(404, "Not found")
+    data = payload.model_dump()
+    db.update_smtp(smtp_id, data)
+    db.applog("info", f"SMTP {data['name']} updated. Re-testing...", source="smtp")
+    # Re-fetch (password may have been kept from old value)
+    s = db.get_smtp(smtp_id)
+    ehlo_name = s["from_email"].split("@")[-1] if "@" in s["from_email"] else None
+    ok, err = smtp_ops.test_connection(
+        s["host"], s["port"], s["username"], s["password"], bool(s["use_tls"]),
+        ehlo_name=ehlo_name,
+    )
+    db.update_smtp_status(smtp_id, "active" if ok else "inactive", err)
+    db.applog("info" if ok else "error",
+              f"SMTP {data['name']} after edit -> {'active' if ok else 'inactive: ' + (err or '')}",
+              source="smtp")
+    return {"ok": ok, "error": err}
+
+
 @app.get("/api/deliverability")
-async def api_deliverability(domain: str = Query(..., min_length=3)):
+async def api_deliverability(domain: str = Query(..., min_length=3),
+                             selector: Optional[str] = Query(None)):
     try:
-        return deliverability.check_domain(domain)
+        return deliverability.check_domain(domain, selector=selector)
     except Exception as e:
         raise HTTPException(500, f"Lookup failed: {e}")
 
@@ -221,6 +257,21 @@ async def api_smtp_delete(smtp_id: int):
     db.delete_smtp(smtp_id)
     db.applog("info", f"SMTP {s['name']} removed", source="smtp")
     return {"ok": True}
+
+
+@app.post("/api/smtp/{smtp_id}/warmup")
+async def api_smtp_warmup(smtp_id: int, enabled: bool = Query(...)):
+    s = db.get_smtp(smtp_id)
+    if not s:
+        raise HTTPException(404, "Not found")
+    db.set_warmup(smtp_id, enabled)
+    if enabled:
+        db.applog("info",
+                  f"Warmup enabled for {s['name']} — ramping {db.WARMUP_SCHEDULE[0]}/day, "
+                  f"doubling daily up to limit.", source="smtp")
+    else:
+        db.applog("info", f"Warmup disabled for {s['name']} — full daily limit active.", source="smtp")
+    return {"ok": True, "warmup_schedule": db.WARMUP_SCHEDULE}
 
 
 # ---------- uploads ----------
@@ -269,6 +320,37 @@ async def api_spam_check(payload: SpamCheckIn):
     )
 
 
+# ---------- preview (render with a real recipient) ----------
+
+class PreviewIn(BaseModel):
+    subject: str = ""
+    html_body: str = ""
+    text_body: str = ""
+    recipient: Optional[dict] = None
+
+
+@app.post("/api/preview")
+async def api_preview(payload: PreviewIn):
+    """Render the content for one recipient so the user can SEE personalization
+    before sending. Helps catch hardcoded names vs real {{placeholders}}."""
+    sample = payload.recipient or {
+        "email": "sample.person@example.com",
+        "first_name": "Sample", "last_name": "Person", "company": "Sample Co",
+    }
+    ctx = smtp_ops.build_context(sample)
+    # Detect placeholders the content uses, and which ones resolved to empty
+    used = sorted(set(smtp_ops._PLACEHOLDER_RE.findall(
+        f"{payload.subject}\n{payload.html_body}\n{payload.text_body}")))
+    return {
+        "recipient": sample,
+        "subject": smtp_ops.render(payload.subject, ctx),
+        "html_body": smtp_ops.render(payload.html_body, ctx),
+        "text_body": smtp_ops.render(payload.text_body, ctx),
+        "placeholders_used": used,
+        "has_personalization": bool(used),
+    }
+
+
 # ---------- campaigns ----------
 
 @app.post("/api/campaigns")
@@ -303,6 +385,8 @@ async def api_campaign_create(payload: CampaignIn):
         "scheduled_at": scheduled_at,
         "spam_score": report["score"],
         "spam_report": str(report["issues"]),
+        "smtp_ids": ",".join(str(i) for i in payload.smtp_ids) if payload.smtp_ids else None,
+        "send_gap_seconds": max(0, int(payload.send_gap_seconds or 0)),
     })
 
     inserted = 0
@@ -344,6 +428,36 @@ async def api_campaign_get(cid: int):
     if not c:
         raise HTTPException(404, "Not found")
     return c
+
+
+@app.put("/api/campaigns/{cid}")
+async def api_campaign_edit(cid: int, payload: CampaignEdit):
+    c = db.get_campaign(cid)
+    if not c:
+        raise HTTPException(404, "Not found")
+    if c["status"] == "running":
+        raise HTTPException(400, "Pause the campaign before editing.")
+    db.update_campaign(
+        cid,
+        name=payload.name,
+        subject=payload.subject,
+        html_body=payload.html_body,
+        text_body=payload.text_body,
+        smtp_ids=",".join(str(i) for i in payload.smtp_ids) if payload.smtp_ids else None,
+        send_gap_seconds=max(0, int(payload.send_gap_seconds or 0)),
+    )
+    db.applog("info", f"Campaign #{cid} edited", source="campaign", campaign_id=cid)
+    return {"ok": True}
+
+
+@app.delete("/api/campaigns/{cid}")
+async def api_campaign_delete(cid: int):
+    c = db.get_campaign(cid)
+    if not c:
+        raise HTTPException(404, "Not found")
+    db.delete_campaign(cid)
+    db.applog("info", f"Campaign #{cid} '{c['name']}' deleted", source="campaign")
+    return {"ok": True}
 
 
 @app.post("/api/campaigns/{cid}/start")

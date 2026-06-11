@@ -56,6 +56,9 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'inactive',
                 last_tested_at TEXT,
                 last_test_error TEXT,
+                warmup_enabled INTEGER NOT NULL DEFAULT 0,
+                warmup_start TEXT,
+                reply_to TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -69,6 +72,8 @@ def init_db():
                 scheduled_at TEXT,
                 spam_score INTEGER,
                 spam_report TEXT,
+                smtp_ids TEXT,
+                send_gap_seconds INTEGER NOT NULL DEFAULT 0,
                 total INTEGER NOT NULL DEFAULT 0,
                 sent INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +141,24 @@ def init_db():
             );
             """
         )
+        _migrate(conn)
+
+
+def _migrate(conn):
+    """Add columns to existing DBs created before newer features."""
+    smtp_cols = {r["name"] for r in conn.execute("PRAGMA table_info(smtp_servers)")}
+    if "warmup_enabled" not in smtp_cols:
+        conn.execute("ALTER TABLE smtp_servers ADD COLUMN warmup_enabled INTEGER NOT NULL DEFAULT 0")
+    if "warmup_start" not in smtp_cols:
+        conn.execute("ALTER TABLE smtp_servers ADD COLUMN warmup_start TEXT")
+    if "reply_to" not in smtp_cols:
+        conn.execute("ALTER TABLE smtp_servers ADD COLUMN reply_to TEXT")
+
+    camp_cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
+    if "smtp_ids" not in camp_cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN smtp_ids TEXT")
+    if "send_gap_seconds" not in camp_cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN send_gap_seconds INTEGER NOT NULL DEFAULT 0")
 
 
 def now_iso():
@@ -173,23 +196,89 @@ def get_logs(after_id=0, limit=200, campaign_id=None):
 
 # ---------- SMTP servers ----------
 
+# Default warmup ramp — caps for day 1, 2, 3 ... After the schedule ends,
+# the server's full daily_limit applies. Industry-standard gradual ramp.
+WARMUP_SCHEDULE = [50, 100, 250, 500, 1000, 2000, 3500, 5000, 7500, 10000]
+
+
+def warmup_day_index(warmup_start):
+    """1-based day number since warmup_start (in UTC). Returns None if no start."""
+    if not warmup_start:
+        return None
+    try:
+        start = datetime.fromisoformat(warmup_start)
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+    delta = datetime.now(timezone.utc).date() - start.date()
+    return delta.days + 1
+
+
+def effective_daily_limit(smtp_row):
+    """Daily cap honoring warmup ramp if enabled."""
+    base = int(smtp_row.get("daily_limit", 500))
+    if not smtp_row.get("warmup_enabled"):
+        return base
+    day = warmup_day_index(smtp_row.get("warmup_start"))
+    if not day or day < 1:
+        return min(base, WARMUP_SCHEDULE[0])
+    if day > len(WARMUP_SCHEDULE):
+        return base
+    return min(base, WARMUP_SCHEDULE[day - 1])
+
+
 def add_smtp(data):
+    warmup_enabled = int(bool(data.get("warmup_enabled", False)))
+    warmup_start = now_iso() if warmup_enabled else None
     with _LOCK, get_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO smtp_servers
                 (name, host, port, username, password, from_email, from_name,
-                 daily_limit, use_tls, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'inactive', ?)
+                 daily_limit, use_tls, status, warmup_enabled, warmup_start, reply_to, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'inactive', ?, ?, ?, ?)
             """,
             (
                 data["name"], data["host"], data["port"], data["username"], data["password"],
                 data["from_email"], data.get("from_name", ""),
                 int(data.get("daily_limit", 500)), int(bool(data.get("use_tls", True))),
+                warmup_enabled, warmup_start, data.get("reply_to") or None,
                 now_iso(),
             ),
         )
         return cur.lastrowid
+
+
+def update_smtp(smtp_id, data):
+    """Update an existing SMTP server's editable fields."""
+    fields = {
+        "name": data["name"], "host": data["host"], "port": int(data["port"]),
+        "username": data["username"], "from_email": data["from_email"],
+        "from_name": data.get("from_name", ""), "daily_limit": int(data.get("daily_limit", 500)),
+        "use_tls": int(bool(data.get("use_tls", True))), "reply_to": data.get("reply_to") or None,
+    }
+    # Only overwrite password if a new one was supplied (keep old if blank)
+    if data.get("password"):
+        fields["password"] = data["password"]
+    cols = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [smtp_id]
+    with _LOCK, get_conn() as conn:
+        conn.execute(f"UPDATE smtp_servers SET {cols} WHERE id=?", vals)
+
+
+def set_warmup(smtp_id, enabled):
+    with _LOCK, get_conn() as conn:
+        if enabled:
+            conn.execute(
+                "UPDATE smtp_servers SET warmup_enabled=1, warmup_start=? WHERE id=?",
+                (now_iso(), smtp_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE smtp_servers SET warmup_enabled=0 WHERE id=?",
+                (smtp_id,),
+            )
 
 
 def update_smtp_status(smtp_id, status, error=None):
@@ -233,17 +322,24 @@ def create_campaign(data):
             """
             INSERT INTO campaigns
                 (name, subject, html_body, text_body, status, scheduled_at,
-                 spam_score, spam_report, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 spam_score, spam_report, smtp_ids, send_gap_seconds, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["name"], data["subject"], data["html_body"], data["text_body"],
                 data.get("status", "draft"), data.get("scheduled_at"),
                 data.get("spam_score"), data.get("spam_report"),
+                data.get("smtp_ids"), int(data.get("send_gap_seconds", 0) or 0),
                 now_iso(),
             ),
         )
         return cur.lastrowid
+
+
+def delete_campaign(campaign_id):
+    with _LOCK, get_conn() as conn:
+        conn.execute("DELETE FROM recipients WHERE campaign_id=?", (campaign_id,))
+        conn.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
 
 
 def update_campaign(campaign_id, **fields):
@@ -433,6 +529,7 @@ def per_smtp_stats():
         rows = conn.execute(
             """
             SELECT s.id, s.name, s.host, s.daily_limit, s.status,
+                   s.warmup_enabled, s.warmup_start,
                    COALESCE(SUM(c.sent_count), 0) AS sent_today
             FROM smtp_servers s
             LEFT JOIN smtp_counters c ON c.smtp_id = s.id AND c.day = ?
@@ -441,7 +538,13 @@ def per_smtp_stats():
             """,
             (today_str(),),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["effective_limit"] = effective_daily_limit(d)
+            d["warmup_day"] = warmup_day_index(d.get("warmup_start")) if d.get("warmup_enabled") else None
+            out.append(d)
+        return out
 
 
 def overall_stats():
