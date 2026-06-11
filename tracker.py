@@ -77,6 +77,6 @@ if __name__ == "__main__":
     db.init_db()
     ensure_pixel()
     host = os.getenv("TRACKER_HOST", "0.0.0.0")
-    port = int(os.getenv("TRACKER_PORT", "8090"))
+    port = int(os.getenv("TRACKER_PORT", "8080"))
     log.info("Tracker server starting on %s:%s", host, port)
     app.run(host=host, port=port, threaded=True)
