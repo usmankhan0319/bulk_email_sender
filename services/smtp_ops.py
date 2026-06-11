@@ -1,5 +1,6 @@
 """SMTP test + send helpers used by the worker and API."""
 
+import re
 import smtplib
 import socket
 import ssl
@@ -8,7 +9,61 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 
-from jinja2 import Template
+
+def _norm_key(s):
+    """Normalize a placeholder/field name: drop spaces, underscores, dots, lowercase.
+    So 'First Name', 'first_name', 'FirstName', 'FIRST NAME' all map to 'firstname'."""
+    return re.sub(r"[\s_\.\-]+", "", str(s)).lower()
+
+
+def build_context(recipient):
+    """Build a personalization lookup. Keys are NORMALIZED (no spaces/case), so the
+    client can write {{First Name}}, {{first_name}}, {{Name}}, {{FULLNAME}} — anything."""
+    first = (recipient.get("first_name") or "").strip()
+    last = (recipient.get("last_name") or "").strip()
+    company = (recipient.get("company") or "").strip()
+    email = recipient.get("email", "")
+    full = (first + " " + last).strip() or first or (email.split("@")[0] if email else "")
+
+    # Raw values keyed by their natural names; lookup normalizes both sides.
+    raw = {
+        "first_name": first or "there",
+        "firstname": first or "there",
+        "first": first or "there",
+        "fname": first or "there",
+        "name": full or "there",
+        "fullname": full or "there",
+        "full_name": full or "there",
+        "last_name": last,
+        "lastname": last,
+        "last": last,
+        "lname": last,
+        "company": company,
+        "organization": company,
+        "org": company,
+        "email": email,
+        "mail": email,
+    }
+    return {_norm_key(k): v for k, v in raw.items()}
+
+
+# Matches {{ anything }} — captures the inner name. No Jinja, so spaces/caps never crash.
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def render(template_str, ctx):
+    """Replace {{Placeholders}} with values from ctx. Robust:
+      - case/space/underscore insensitive ({{First Name}} == {{first_name}})
+      - unknown placeholders render as empty string (never crashes)
+      - ctx is expected to already have normalized keys (see build_context)
+    """
+    if not template_str:
+        return ""
+
+    def _sub(m):
+        return str(ctx.get(_norm_key(m.group(1)), ""))
+
+    return _PLACEHOLDER_RE.sub(_sub, template_str)
 
 
 def test_connection(host, port, username, password, use_tls=True, timeout=15, ehlo_name=None):
@@ -47,10 +102,6 @@ def test_connection(host, port, username, password, use_tls=True, timeout=15, eh
         return False, f"Unexpected: {e}"
 
 
-def render(tmpl_str, ctx):
-    return Template(tmpl_str).render(**ctx)
-
-
 HTML_WRAPPER = """<!doctype html>
 <html lang="en">
 <head>
@@ -83,15 +134,14 @@ def _wrap_html(inner_html, subject):
 
 def build_message(smtp_cfg, recipient, subject, html_body, text_body,
                   tracking_base_url, unsubscribe_url, reply_to):
-    ctx = {
-        "first_name": recipient.get("first_name") or "there",
-        "last_name": recipient.get("last_name") or "",
-        "company": recipient.get("company") or "",
-        "email": recipient["email"],
-    }
+    ctx = build_context(recipient)
     subject_r = render(subject, ctx)
     html_inner = render(html_body, ctx)
     text_r = render(text_body, ctx)
+
+    # Ignore leftover placeholder values so broken links never go out
+    if unsubscribe_url and "yourdomain.com" in unsubscribe_url.lower():
+        unsubscribe_url = ""
 
     tracking_id = recipient["tracking_id"]
     if tracking_base_url:
@@ -124,11 +174,13 @@ def build_message(smtp_cfg, recipient, subject, html_body, text_body,
     msg["Subject"] = subject_r
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=from_domain)
-    # Reply-To must align with From-domain when possible (alignment helps DMARC)
-    if reply_to:
-        msg["Reply-To"] = reply_to
-    else:
-        msg["Reply-To"] = from_email
+    # Reply-To priority: per-SMTP reply_to > caller default > from_email.
+    # NEVER fall back to a placeholder — alignment with From-domain helps DMARC.
+    effective_reply_to = (smtp_cfg.get("reply_to") or "").strip() or (reply_to or "").strip() or from_email
+    # Guard against the old placeholder leaking through
+    if "yourdomain.com" in effective_reply_to.lower():
+        effective_reply_to = from_email
+    msg["Reply-To"] = effective_reply_to
     if unsubscribe_url:
         msg["List-Unsubscribe"] = f"<{unsubscribe_url}?e={recipient['email']}>, <mailto:{from_email}?subject=unsubscribe>"
         msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"

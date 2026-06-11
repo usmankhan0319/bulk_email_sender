@@ -125,10 +125,15 @@
           <div class="hint">SPF / DKIM / DMARC check per from-domain</div>
         </div>
         <div class="toolbar mt-8">
-          <input id="dlv-input" placeholder="yourdomain.com" style="background:var(--bg);border:1px solid var(--border-strong);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:280px;">
+          <input id="dlv-input" placeholder="yourdomain.com" style="background:var(--bg);border:1px solid var(--border-strong);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:240px;">
+          <input id="dlv-selector" placeholder="DKIM selector (e.g. titan1)" style="background:var(--bg);border:1px solid var(--border-strong);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;width:200px;">
           <button class="btn" onclick="runDlvCheck()">Check</button>
           <div class="spacer"></div>
           <span class="muted" id="dlv-summary"></span>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">
+          Tip: Titan/cPanel email ka selector usually <strong>titan1</strong> hota hai.
+          DNS Host Name <code>titan1._domainkey</code> → selector = <code>titan1</code>.
         </div>
         <div id="dlv-detail" class="mt-12"></div>
       </div>
@@ -148,10 +153,10 @@
         <table class="t">
           <thead><tr>
             <th>#</th><th>Name</th><th>Host : Port</th><th>From</th>
-            <th>Status</th><th class="right">Daily limit</th><th></th>
+            <th>Status</th><th>Warm-up</th><th class="right">Daily limit</th><th></th>
           </tr></thead>
           <tbody id="smtp-tbody">
-            <tr><td colspan="7" class="muted">No SMTP servers yet. Click <strong>Add SMTP server</strong>.</td></tr>
+            <tr><td colspan="8" class="muted">No SMTP servers yet. Click <strong>Add SMTP server</strong>.</td></tr>
           </tbody>
         </table>
       </div>
@@ -190,20 +195,38 @@
           <div class="filename" id="content-filename"></div>
         </div>
         <input type="file" id="file-content" accept=".docx,.html,.htm,.txt" style="display:none">
+
+        <div class="mt-16" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+          <div class="muted" style="font-size:12px;margin-bottom:8px;">
+            <strong>Personalization tags</strong> — naam apne aap recipient ka aayega.
+            Content mein jahan naam chahiye, wahan literal naam (jaise "Ethan Whitmore") <b>mat</b> likhein —
+            in tags mein se click karke daalein:
+          </div>
+          <div class="toolbar" style="gap:6px;flex-wrap:wrap;">
+            <button class="btn small" onclick="insertTag('{{Name}}')">{{Name}}</button>
+            <button class="btn small" onclick="insertTag('{{first_name}}')">{{first_name}}</button>
+            <button class="btn small" onclick="insertTag('{{last_name}}')">{{last_name}}</button>
+            <button class="btn small" onclick="insertTag('{{Company}}')">{{Company}}</button>
+            <button class="btn small" onclick="insertTag('{{email}}')">{{email}}</button>
+          </div>
+        </div>
+
         <div class="form-row mt-16">
-          <label>HTML preview / edit</label>
+          <label>HTML body / edit <span class="muted">(yahan naam ki jagah {{Name}} likhein)</span></label>
           <textarea id="c-html"></textarea>
         </div>
         <div class="form-row">
-          <label>Plain-text version</label>
+          <label>Plain-text version <span class="muted">(yahan bhi naam ki jagah {{Name}})</span></label>
           <textarea id="c-text"></textarea>
         </div>
         <div class="toolbar mt-12">
           <button class="btn" onclick="runSpamCheck()">Run spam check</button>
+          <button class="btn" onclick="previewEmail()">Preview (real name dekho)</button>
           <div class="spacer"></div>
           <span class="muted" id="spam-summary"></span>
         </div>
         <div id="spam-detail"></div>
+        <div id="preview-box"></div>
       </div>
 
       <div class="card">
@@ -228,7 +251,44 @@
       </div>
 
       <div class="card">
-        <div class="card-header"><h2>4. Send</h2></div>
+        <div class="card-header">
+          <h2>4. Sending options</h2>
+          <div class="hint">choose servers/domains & speed</div>
+        </div>
+        <div class="form-row">
+          <label>Send from these servers / domains</label>
+          <div id="c-smtp-list" class="muted" style="display:grid;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+            Loading SMTP servers…
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:6px;">
+            Kuch select na karein to <strong>saare active servers</strong> use honge (auto-rotate).
+            Multiple select karein to load un par baant di jayegi.
+          </div>
+        </div>
+        <div class="form-grid-2 mt-12">
+          <div class="form-row">
+            <label>Gap between emails</label>
+            <select id="c-gap">
+              <option value="0">As fast as possible (default)</option>
+              <option value="60">1 minute gap</option>
+              <option value="300">5 minute gap</option>
+              <option value="600">10 minute gap</option>
+              <option value="1800">30 minute gap</option>
+              <option value="3600">1 hour gap</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>&nbsp;</label>
+            <div class="muted" style="font-size:12px;">
+              Gap "5 minute" = har email ke beech 5 min ka wait. Reputation ke liye safe,
+              lekin volume slow hoga (5 min gap = ~288 emails/day per server).
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>5. Send</h2></div>
         <div class="toolbar">
           <button class="btn primary" onclick="submitCampaign('start_now')">Send now</button>
           <button class="btn" onclick="submitCampaign('save')">Save as draft</button>
@@ -237,6 +297,9 @@
             <input type="datetime-local" id="c-schedule" style="width:auto;">
             <button class="btn" onclick="submitCampaign('schedule')">Schedule</button>
           </div>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px;">
+          Schedule mein date + time dono set hoti hai (calendar pe click karke time bhi choose karein).
         </div>
       </div>
     </section>
@@ -288,7 +351,7 @@
 <!-- ============================= SMTP MODAL ============================= -->
 <div class="modal-bg" id="smtp-modal">
   <div class="modal">
-    <h3>Add SMTP Server</h3>
+    <h3 id="smtp-modal-title">Add SMTP Server</h3>
     <div class="form">
       <div class="form-row"><label>Friendly name</label><input id="s-name" placeholder="Primary Gmail"></div>
       <div class="form-grid-2">
@@ -297,16 +360,25 @@
       </div>
       <div class="form-grid-2">
         <div class="form-row"><label>Username</label><input id="s-user" placeholder="you@gmail.com"></div>
-        <div class="form-row"><label>Password / App password</label><input id="s-pass" type="password"></div>
+        <div class="form-row"><label>Password / App password</label><input id="s-pass" type="password" placeholder="leave blank to keep current"></div>
       </div>
       <div class="form-grid-2">
         <div class="form-row"><label>From email</label><input id="s-from-email" placeholder="you@gmail.com"></div>
         <div class="form-row"><label>From name</label><input id="s-from-name" placeholder="Your Brand"></div>
       </div>
+      <div class="form-row"><label>Reply-To email <span class="muted">(jahan client reply kare)</span></label><input id="s-reply-to" placeholder="support@yourrealdomain.com"></div>
       <div class="form-grid-2">
-        <div class="form-row"><label>Daily limit</label><input id="s-limit" type="number" value="500"></div>
+        <div class="form-row"><label>Daily limit (max)</label><input id="s-limit" type="number" value="500"></div>
         <div class="form-row"><label>&nbsp;</label>
           <div class="checkbox-row"><input id="s-tls" type="checkbox" checked><label for="s-tls">Use STARTTLS</label></div>
+        </div>
+      </div>
+      <div class="form-row" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+        <div class="checkbox-row"><input id="s-warmup" type="checkbox"><label for="s-warmup"><strong>Enable warm-up</strong></label></div>
+        <div class="muted" style="font-size:12px;margin-top:6px;">
+          Recommended for new domains/IPs. Gradually ramps sending:
+          Day 1 → 50, Day 2 → 100, Day 3 → 250, Day 4 → 500, Day 5 → 1k, doubling
+          up to your daily limit. Protects sender reputation and avoids spam folders.
         </div>
       </div>
       <div class="toolbar mt-8">

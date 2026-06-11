@@ -19,6 +19,10 @@ COMMON_DKIM_SELECTORS = [
     "default", "google", "k1", "k2", "s1", "s2",
     "selector1", "selector2", "mail", "smtpapi", "mxvault", "mandrill",
     "dkim", "everlytickey1", "sendgrid", "mailgun",
+    # Titan / cPanel / web-hosting providers
+    "titan1", "titan2", "titan", "x", "cm", "dkim1", "dkim2",
+    "scph0819", "scph1019", "scph0920", "hostingermail",
+    "zoho", "zmail", "amazonses", "pm", "fm1", "fm2",
 ]
 
 
@@ -47,11 +51,18 @@ def _mx_records(name, timeout=5):
         return []
 
 
-def check_domain(domain):
+def check_domain(domain, selector=None):
     domain = domain.strip().lower().lstrip("@")
     issues = []
     found = {"spf": None, "dmarc": None, "dkim": [], "mx": []}
     score = 100
+
+    # If the user gave a custom selector, probe it first.
+    selectors_to_try = list(COMMON_DKIM_SELECTORS)
+    if selector:
+        selector = selector.strip().lower().replace("._domainkey", "").rstrip(".")
+        if selector and selector not in selectors_to_try:
+            selectors_to_try.insert(0, selector)
 
     # MX
     mx = _mx_records(domain)
@@ -108,9 +119,9 @@ def check_domain(domain):
             ),
         })
 
-    # DKIM (best effort — probe common selectors)
+    # DKIM (best effort — probe known + user-supplied selectors)
     dkim_hits = []
-    for sel in COMMON_DKIM_SELECTORS:
+    for sel in selectors_to_try:
         recs = _txt_records(f"{sel}._domainkey.{domain}")
         for r in recs:
             if "p=" in r.lower() or "v=dkim1" in r.lower():
@@ -125,7 +136,9 @@ def check_domain(domain):
             "severity": "high",
             "title": "No DKIM record detected",
             "detail": (
-                f"Couldn't find DKIM at any common selector for {domain}. "
+                f"Couldn't find DKIM at the common selectors for {domain}. "
+                "Agar aapne DKIM set kiya hai (e.g. Titan = titan1), to apna selector "
+                "input box mein daal kar dobara check karein. "
                 "DKIM cryptographically signs your emails — Gmail/Outlook expect it for bulk."
             ),
             "fix": (

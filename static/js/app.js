@@ -4,6 +4,8 @@
 
 let parsedRecipients = [];
 let lastLogId = 0;
+let editingSmtpId = null;     // null = add mode, else editing this id
+let editingCampaignId = null; // null = create mode, else editing this campaign
 
 // ---------- nav ----------
 
@@ -19,6 +21,25 @@ function switchPage(name) {
   if (name === 'smtp') loadSmtps();
   if (name === 'campaigns') loadCampaigns();
   if (name === 'dashboard') refreshAll();
+  if (name === 'campaign') loadCampaignSmtpChoices();
+}
+
+async function loadCampaignSmtpChoices() {
+  try {
+    const d = await api('/api/smtp');
+    const box = document.getElementById('c-smtp-list');
+    if (!d.smtps.length) {
+      box.innerHTML = '<span class="muted">No SMTP servers yet — add one in the SMTP Servers tab first.</span>';
+      return;
+    }
+    box.innerHTML = d.smtps.map(s => {
+      const dis = s.status !== 'active';
+      return `<label class="checkbox-row" style="${dis ? 'opacity:0.5' : ''}">
+        <input type="checkbox" class="c-smtp-check" value="${s.id}" ${dis ? 'disabled' : ''}>
+        <span>${escape(s.name)} <span class="muted">(${escape(s.from_email)})</span> ${statusPill(s.status)}</span>
+      </label>`;
+    }).join('');
+  } catch (e) { /* ignore */ }
 }
 
 // ---------- toast ----------
@@ -92,13 +113,17 @@ async function refreshAll() {
       stb.innerHTML = '<tr><td colspan="6" class="muted">No SMTP servers configured.</td></tr>';
     } else {
       stb.innerHTML = s.smtps.map(r => {
-        const pct = Math.min(100, Math.round(100 * r.sent_today / Math.max(1, r.daily_limit)));
+        const cap = r.effective_limit || r.daily_limit;
+        const pct = Math.min(100, Math.round(100 * r.sent_today / Math.max(1, cap)));
+        const limitCell = r.warmup_enabled
+          ? `${cap} <span class="muted">/ ${r.daily_limit}</span><div class="muted" style="font-size:11px">warm-up day ${r.warmup_day || 1}</div>`
+          : `${r.daily_limit}`;
         return `<tr>
           <td>${escape(r.name)}</td>
           <td class="muted">${escape(r.host)}</td>
           <td>${statusPill(r.status)}</td>
           <td class="right">${r.sent_today}</td>
-          <td class="right">${r.daily_limit}</td>
+          <td class="right">${limitCell}</td>
           <td class="right" style="min-width:120px"><div class="progress"><div style="width:${pct}%"></div></div></td>
         </tr>`;
       }).join('');
@@ -142,21 +167,66 @@ async function loadSmtps() {
       <td class="muted">${escape(s.host)}:${s.port}</td>
       <td class="muted">${escape(s.from_email)}</td>
       <td>${statusPill(s.status)}${s.last_test_error ? `<div class="muted" style="font-size:11px;margin-top:4px">${escape(s.last_test_error).slice(0,80)}</div>` : ''}</td>
+      <td>${warmupCell(s)}</td>
       <td class="right">${s.daily_limit}</td>
       <td class="right">
         <button class="btn small" onclick="testSmtp(${s.id})">Test</button>
+        <button class="btn small" onclick="openSmtpEdit(${s.id})">Edit</button>
         <button class="btn small danger" onclick="deleteSmtp(${s.id})">Delete</button>
       </td>
     </tr>`).join('');
 }
 
+function warmupCell(s) {
+  if (s.warmup_enabled) {
+    const day = s.warmup_day || 1;
+    return `<span class="pill info" title="Day ${day} of warm-up">warming · day ${day}</span>
+            <button class="btn small ghost" style="margin-top:4px" onclick="toggleWarmup(${s.id}, false)">Disable</button>`;
+  }
+  return `<button class="btn small" onclick="toggleWarmup(${s.id}, true)">Start warm-up</button>`;
+}
+
+async function toggleWarmup(id, enabled) {
+  try {
+    await api(`/api/smtp/${id}/warmup?enabled=${enabled}`, {method: 'POST'});
+    toast(enabled ? 'Warm-up started — ramping gradually' : 'Warm-up disabled', 'good');
+    loadSmtps(); refreshAll();
+  } catch (e) { toast(e.message, 'bad'); }
+}
+
 function openSmtpModal() {
-  ['s-name','s-host','s-user','s-pass','s-from-email','s-from-name'].forEach(id => document.getElementById(id).value = '');
+  editingSmtpId = null;
+  document.getElementById('smtp-modal-title').textContent = 'Add SMTP Server';
+  ['s-name','s-host','s-user','s-pass','s-from-email','s-from-name','s-reply-to'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('s-port').value = 587;
   document.getElementById('s-limit').value = 500;
   document.getElementById('s-tls').checked = true;
+  document.getElementById('s-warmup').checked = false;
   document.getElementById('smtp-test-result').textContent = '';
   document.getElementById('smtp-modal').classList.add('show');
+}
+
+async function openSmtpEdit(id) {
+  try {
+    const d = await api('/api/smtp');
+    const s = d.smtps.find(x => x.id === id);
+    if (!s) return toast('SMTP not found', 'bad');
+    editingSmtpId = id;
+    document.getElementById('smtp-modal-title').textContent = 'Edit SMTP Server';
+    document.getElementById('s-name').value = s.name || '';
+    document.getElementById('s-host').value = s.host || '';
+    document.getElementById('s-port').value = s.port || 587;
+    document.getElementById('s-user').value = s.username || '';
+    document.getElementById('s-pass').value = '';   // blank = keep current
+    document.getElementById('s-from-email').value = s.from_email || '';
+    document.getElementById('s-from-name').value = s.from_name || '';
+    document.getElementById('s-reply-to').value = s.reply_to || '';
+    document.getElementById('s-limit').value = s.daily_limit || 500;
+    document.getElementById('s-tls').checked = !!s.use_tls;
+    document.getElementById('s-warmup').checked = !!s.warmup_enabled;
+    document.getElementById('smtp-test-result').textContent = '';
+    document.getElementById('smtp-modal').classList.add('show');
+  } catch (e) { toast(e.message, 'bad'); }
 }
 function closeSmtpModal() { document.getElementById('smtp-modal').classList.remove('show'); }
 
@@ -173,20 +243,24 @@ async function submitSmtp() {
       password: document.getElementById('s-pass').value,
       from_email: document.getElementById('s-from-email').value.trim(),
       from_name: document.getElementById('s-from-name').value.trim(),
+      reply_to: document.getElementById('s-reply-to').value.trim(),
       daily_limit: parseInt(document.getElementById('s-limit').value),
       use_tls: document.getElementById('s-tls').checked,
+      warmup_enabled: document.getElementById('s-warmup').checked,
     };
     if (!body.name || !body.host || !body.from_email) throw new Error('Name, host and from_email are required');
-    const res = await api('/api/smtp', {
-      method: 'POST',
+
+    const isEdit = editingSmtpId !== null;
+    const res = await api(isEdit ? `/api/smtp/${editingSmtpId}` : '/api/smtp', {
+      method: isEdit ? 'PUT' : 'POST',
       headers: {'content-type': 'application/json'},
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      toast('SMTP connected. Checking deliverability...', 'good');
+      toast(isEdit ? 'SMTP updated & reconnected' : 'SMTP connected.', 'good');
       closeSmtpModal();
       loadSmtps(); refreshAll();
-      if (res.deliverability) {
+      if (!isEdit && res.deliverability) {
         const domain = body.from_email.split('@')[1];
         document.getElementById('dlv-input').value = domain;
         renderDlv(res.deliverability);
@@ -194,7 +268,8 @@ async function submitSmtp() {
       }
     } else {
       out.innerHTML = `<span style="color:var(--bad)">${escape(res.error || 'Connection failed')}</span>`;
-      toast('SMTP saved but connection failed', 'bad');
+      toast('Saved but connection failed', 'bad');
+      loadSmtps();
     }
   } catch (e) {
     out.innerHTML = `<span style="color:var(--bad)">${escape(e.message)}</span>`;
@@ -207,11 +282,14 @@ async function submitSmtp() {
 
 async function runDlvCheck() {
   const domain = document.getElementById('dlv-input').value.trim();
+  const selector = document.getElementById('dlv-selector').value.trim();
   if (!domain) return toast('Enter a domain', 'bad');
   document.getElementById('dlv-summary').textContent = 'Looking up DNS...';
   document.getElementById('dlv-detail').innerHTML = '';
   try {
-    const r = await api(`/api/deliverability?domain=${encodeURIComponent(domain)}`);
+    let url = `/api/deliverability?domain=${encodeURIComponent(domain)}`;
+    if (selector) url += `&selector=${encodeURIComponent(selector)}`;
+    const r = await api(url);
     renderDlv(r);
   } catch (e) { toast(e.message, 'bad'); }
 }
@@ -336,7 +414,66 @@ async function runSpamCheck() {
   } catch (e) { toast(e.message, 'bad'); }
 }
 
+// ---------- personalization helpers ----------
+
+let lastFocusedField = 'c-html';
+['c-html', 'c-text', 'c-subject'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('focus', () => { lastFocusedField = id; });
+});
+
+function insertTag(tag) {
+  const el = document.getElementById(lastFocusedField) || document.getElementById('c-html');
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + tag + el.value.slice(end);
+  el.focus();
+  el.selectionStart = el.selectionEnd = start + tag.length;
+  toast(`Inserted ${tag}`, 'good');
+}
+
+async function previewEmail() {
+  const subject = document.getElementById('c-subject').value;
+  const html = document.getElementById('c-html').value;
+  const text = document.getElementById('c-text').value;
+  if (!html.trim() && !subject.trim()) return toast('Add content first', 'bad');
+
+  // Use the first uploaded recipient so the client sees a REAL name
+  const recipient = parsedRecipients.length ? parsedRecipients[0] : null;
+  try {
+    const r = await api('/api/preview', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({subject, html_body: html, text_body: text, recipient}),
+    });
+    const who = `${r.recipient.first_name || ''} ${r.recipient.last_name || ''}`.trim() || r.recipient.email;
+    let warn = '';
+    if (!r.has_personalization) {
+      warn = `<div class="issue mt-8"><span class="pill warn">warning</span>
+        <div><strong>Koi personalization tag nahi mila</strong>
+        <div class="fix">Content mein {{Name}} ya {{first_name}} use karein, warna har email same jayegi.
+        Agar naam literal likha hai (jaise "Ethan Whitmore") to woh change nahi hoga.</div></div></div>`;
+    } else {
+      warn = `<div class="muted mt-8" style="font-size:12px">Tags found: ${r.placeholders_used.map(escape).join(', ')}</div>`;
+    }
+    document.getElementById('preview-box').innerHTML = `
+      <div class="card" style="margin-top:12px;background:var(--bg);">
+        <div class="card-header"><h2>Preview — as sent to: ${escape(who)}</h2>
+          <div class="hint">first uploaded recipient</div></div>
+        <div class="muted" style="font-size:12px;">Subject:</div>
+        <div style="margin-bottom:12px;"><strong>${escape(r.subject)}</strong></div>
+        <div class="muted" style="font-size:12px;">Body:</div>
+        <div style="background:#fff;color:#222;border-radius:8px;padding:16px;">${r.html_body}</div>
+        ${warn}
+      </div>`;
+  } catch (e) { toast(e.message, 'bad'); }
+}
+
 // ---------- submit campaign ----------
+
+function selectedSmtpIds() {
+  return Array.from(document.querySelectorAll('.c-smtp-check:checked')).map(c => parseInt(c.value));
+}
 
 async function submitCampaign(action) {
   const name = document.getElementById('c-name').value.trim();
@@ -344,10 +481,33 @@ async function submitCampaign(action) {
   const html = document.getElementById('c-html').value;
   const text = document.getElementById('c-text').value;
   const sched = document.getElementById('c-schedule').value;
+  const gap = parseInt(document.getElementById('c-gap').value) || 0;
+  const smtp_ids = selectedSmtpIds();
 
   if (!name) return toast('Campaign name is required', 'bad');
   if (!subject) return toast('Subject is required', 'bad');
   if (!html.trim()) return toast('Email content is required', 'bad');
+
+  // EDIT MODE — update existing campaign (no recipients re-upload)
+  if (editingCampaignId !== null) {
+    try {
+      await api(`/api/campaigns/${editingCampaignId}`, {
+        method: 'PUT',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({
+          name, subject, html_body: html,
+          text_body: text || html.replace(/<[^>]+>/g, ''),
+          smtp_ids, send_gap_seconds: gap,
+        }),
+      });
+      toast(`Campaign #${editingCampaignId} updated`, 'good');
+      resetCampaignForm();
+      switchPage('campaigns');
+    } catch (e) { toast(e.message, 'bad'); }
+    return;
+  }
+
+  // CREATE MODE
   if (!parsedRecipients.length) return toast('Upload a recipients file first', 'bad');
   if (action === 'schedule' && !sched) return toast('Pick a date/time to schedule', 'bad');
 
@@ -355,6 +515,7 @@ async function submitCampaign(action) {
     name, subject, html_body: html, text_body: text || html.replace(/<[^>]+>/g, ''),
     recipients: parsedRecipients, action,
     scheduled_at: action === 'schedule' ? new Date(sched).toISOString() : null,
+    smtp_ids, send_gap_seconds: gap,
   };
   try {
     const r = await api('/api/campaigns', {
@@ -363,13 +524,45 @@ async function submitCampaign(action) {
       body: JSON.stringify(body),
     });
     toast(`Campaign #${r.id} created (${r.inserted} recipients, status=${r.status})`, 'good');
-    document.getElementById('c-name').value = '';
-    parsedRecipients = [];
-    document.getElementById('recipients-preview').innerHTML = '<tr><td colspan="4" class="muted">No recipients loaded.</td></tr>';
-    document.getElementById('recipients-summary').textContent = '';
-    document.getElementById('content-filename').textContent = '';
-    document.getElementById('recipients-filename').textContent = '';
+    resetCampaignForm();
     switchPage('campaigns');
+  } catch (e) { toast(e.message, 'bad'); }
+}
+
+function resetCampaignForm() {
+  editingCampaignId = null;
+  ['c-name','c-subject','c-html','c-text','c-schedule'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('c-gap').value = '0';
+  parsedRecipients = [];
+  document.getElementById('recipients-preview').innerHTML = '<tr><td colspan="4" class="muted">No recipients loaded.</td></tr>';
+  document.getElementById('recipients-summary').textContent = '';
+  document.getElementById('content-filename').textContent = '';
+  document.getElementById('recipients-filename').textContent = '';
+  document.getElementById('spam-summary').textContent = '';
+  document.getElementById('spam-detail').innerHTML = '';
+  const pb = document.getElementById('preview-box');
+  if (pb) pb.innerHTML = '';
+  document.querySelectorAll('.c-smtp-check').forEach(c => c.checked = false);
+}
+
+async function editCampaign(id) {
+  try {
+    const c = await api(`/api/campaigns/${id}`);
+    if (c.status === 'running') return toast('Pause the campaign before editing', 'bad');
+    editingCampaignId = id;
+    switchPage('campaign');
+    document.getElementById('c-name').value = c.name || '';
+    document.getElementById('c-subject').value = c.subject || '';
+    document.getElementById('c-html').value = c.html_body || '';
+    document.getElementById('c-text').value = c.text_body || '';
+    document.getElementById('c-gap').value = String(c.send_gap_seconds || 0);
+    // restore selected SMTPs after the checkbox list loads
+    const ids = (c.smtp_ids || '').split(',').map(x => x.trim()).filter(Boolean);
+    setTimeout(() => {
+      document.querySelectorAll('.c-smtp-check').forEach(cb => { cb.checked = ids.includes(cb.value); });
+    }, 300);
+    runSpamCheck();
+    toast(`Editing campaign #${id} — recipients stay as-is`, 'info');
   } catch (e) { toast(e.message, 'bad'); }
 }
 
@@ -397,18 +590,33 @@ async function loadCampaigns() {
 }
 
 function campActions(c) {
+  let btns = '';
   if (c.status === 'draft' || c.status === 'paused')
-    return `<button class="btn small" onclick="campAction(${c.id},'start')">Start</button>`;
+    btns += `<button class="btn small" onclick="campAction(${c.id},'start')">Start</button> `;
   if (c.status === 'running')
-    return `<button class="btn small" onclick="campAction(${c.id},'pause')">Pause</button>`;
+    btns += `<button class="btn small" onclick="campAction(${c.id},'pause')">Pause</button> `;
   if (c.status === 'scheduled')
-    return `<span class="muted" style="font-size:12px">at ${new Date(c.scheduled_at).toLocaleString()}</span>`;
-  return '';
+    btns += `<span class="muted" style="font-size:12px">at ${new Date(c.scheduled_at).toLocaleString()}</span> `;
+  // Edit allowed for anything not actively running
+  if (c.status !== 'running')
+    btns += `<button class="btn small" onclick="editCampaign(${c.id})">Edit</button> `;
+  // Delete always available
+  btns += `<button class="btn small danger" onclick="deleteCampaign(${c.id})">Delete</button>`;
+  return btns;
 }
 
 async function campAction(id, action) {
   await api(`/api/campaigns/${id}/${action}`, {method: 'POST'});
   loadCampaigns();
+}
+
+async function deleteCampaign(id) {
+  if (!confirm('Delete this campaign and all its recipients? This cannot be undone.')) return;
+  try {
+    await api(`/api/campaigns/${id}`, {method: 'DELETE'});
+    toast(`Campaign #${id} deleted`, 'good');
+    loadCampaigns(); refreshAll();
+  } catch (e) { toast(e.message, 'bad'); }
 }
 
 // ---------- logs ----------
